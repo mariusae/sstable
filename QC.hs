@@ -7,8 +7,12 @@ import Test.QuickCheck.Arbitrary
 import Data.List
 import Data.Array
 import Data.SSTable
+import Data.Maybe
 
 import System.IO.Unsafe
+
+import Debug.Trace
+import Text.Printf
 
 newtype IndexList
  = IA { unIA :: [(String, Int, Int)] }
@@ -28,20 +32,18 @@ prop_binary_search_works (IA l) = go ((snd . bounds) arr)
     split n = (a, (b, c)) where (a, b, c) = arr!n
 
     go (-1) = True
-    go n = binarySearch arr key == Right val && (go $ n - 1)
+    go n = binarySearch arr key == Just n && (go $ n - 1)
       where
         (key, val) = split $ n
 
-isLeft (Left  _) = True
-isLeft (Right _) = False
+fst3 (x, _, _) = x
 
 prop_binary_search_negative_lookup_works :: IndexList -> Property
 prop_binary_search_negative_lookup_works (IA l) =
   length l' > 4 ==>
-    isLeft $ binarySearch arr firstElem
+    isJust $ binarySearch arr firstElem
   where
-    fst3 (x, _, _) = x
-
+    -- FIXME ugh. the following is *hideous* :-/
     l'        = makeSearchList l
     firstElem = (fst3 . head) l'
     lastElem  = last l'
@@ -52,16 +54,34 @@ prop_binary_search_negative_lookup_works (IA l) =
     lastHalf  = (take (mid - 1) . drop 1) a
     arr       = toArray (firstHalf ++ lastHalf)
 
+
+
 prop_arbitrary_lookups_work :: IndexList -> String -> Bool
 prop_arbitrary_lookups_work (IA l) key =
   case binarySearch arr key of
-    Right _ -> lookup key lookupList /= Nothing
-    Left _  -> lookup key lookupList == Nothing
+    Just n  -> key <= (fst3 $ arr!n)
+    Nothing ->
+      let (l, u) = bounds arr in
+      l > u || key > (fst3 $ arr!u)
   where
     arr = makeSearchArray l
     lookupList = map (\(key, _, _) -> (key, True)) l
 
+prop_querying_outside_range_works :: IndexList -> String -> Property
+prop_querying_outside_range_works (IA l) key =
+  len > 0 ==>
+    -- strings longer by suffix are always bigger (at least in
+    -- whatever collation i'm using(!))
+    binarySearch arr (biggestKey ++ "a") == Nothing
+  where
+    l' = makeSearchList l
+    arr = toArray l'
+    len = length l'
+    (biggestKey, _, _) = arr!(len - 1)
+
+check t = quickCheckWith (stdArgs { maxSize = 200, maxSuccess = 500 }) t
+
 main = do
-  quickCheck prop_binary_search_works
-  quickCheck prop_binary_search_negative_lookup_works
-  quickCheck prop_arbitrary_lookups_work
+  check prop_binary_search_works
+  check prop_arbitrary_lookups_work
+  check prop_querying_outside_range_works

@@ -30,14 +30,14 @@ data SSTableHandle
 
 write :: (Binary a) => String -> [(String, a)] -> IO ()
 write path records = do
-  withFile path WriteMode $ \handle -> do
-    (index, n) <- go handle records [] 0
+  withFile path WriteMode $ \fh -> do
+    (index, n) <- go fh records [] 0
 
     -- Store the index at the end, and after it (the last 8 bytes), we
     -- store the index offset.
-    indexOffset <- hFileSize handle
-    put handle (listArray (0, (length index) - 1) index :: Index)
-    put handle (fromIntegral indexOffset :: Int64)
+    indexOffset <- hFileSize fh
+    put fh (listArray (0, (length index) - 1) index :: Index)
+    put fh (fromIntegral indexOffset :: Int64)
 
     return ()
 
@@ -46,8 +46,8 @@ write path records = do
 
     -- the meat: write records & build the index.
     go _      []          index n = return (reverse index, n)
-    go handle ((k, v):rs) index n =
-      L.hPut handle encoded >> go handle rs index' n'
+    go fh ((k, v):rs) index n =
+      L.hPut fh encoded >> go fh rs index' n'
       where
         encoded = encode v
         l       = L.length encoded
@@ -56,44 +56,60 @@ write path records = do
 
 read :: String -> IO SSTableHandle
 read path = do
-  handle <- openFile path ReadMode
-  fs <- hFileSize handle
+  fh <- openFile path ReadMode
+  fs <- hFileSize fh
 
   -- Read the index offset, and then fetch the entire index.
-  hSeek handle AbsoluteSeek $ fs - 8
-  (indexOffset::Int64) <- liftM decode $ L.hGet handle 8
-  hSeek handle AbsoluteSeek $ fromIntegral indexOffset
+  hSeek fh AbsoluteSeek $ fs - 8
+  (indexOffset::Int64) <- liftM decode $ L.hGet fh 8
+  hSeek fh AbsoluteSeek $ fromIntegral indexOffset
   let indexSize = fs - (fromIntegral indexOffset) - 8
-  index <- liftM decode $ L.hGet handle (fromIntegral indexSize)
+  index <- liftM decode $ L.hGet fh (fromIntegral indexSize)
   return $ rnf index  -- normalize (index will be in memory after
                       -- this)
 
-  return $ SSTableHandle handle index
+  return $ SSTableHandle fh index
 
 close :: SSTableHandle -> IO ()
-close (SSTableHandle h _) = hClose h
+close (SSTableHandle fh _) = hClose fh
 
--- TODO: allow range queries (this is essential, in fact!)
-query (SSTableHandle handle arr) lowerBound key =
-  case binarySearch arr key of
-    Right offlen -> fetch offlen
-    Left  offlen -> if lowerBound then fetch offlen else return Nothing
+query (SSTableHandle fh arr) begin end =
+  undefined
+
+-- -- TODO: allow range queries (this is essential, in fact!)
+-- query (SSTableHandle fh arr) lowerBound key =
+--   case binarySearch arr key of
+--     Right offlen -> fetch offlen
+--     Left  offlen -> if lowerBound then fetch offlen else return Nothing
+--   where
+--     fetch (off, len) = do
+--       hSeek fh AbsoluteSeek $ (fromIntegral off)
+--       (liftM decode $ L.hGet fh (fromIntegral len)) >>= return . Just
+
+binarySearch index key =
+  if lowerBound > upperBound
+     then Nothing
+     else go indexBounds
   where
-    fetch (off, len) = do
-      hSeek handle AbsoluteSeek $ (fromIntegral off)
-      (liftM decode $ L.hGet handle (fromIntegral len)) >>= return . Just
+    indexBounds@(lowerBound, upperBound) = bounds index
 
-binarySearch arr key = search (minB, maxB)
-  where
-    (minB, maxB) = bounds arr
-
-    search (lower, upper)
-      | key == val                = Right (off, len)
-      | key < val && mid /= lower = search (lower, mid - 1)
-      | key > val && mid /= upper = search (mid + 1, upper)
-      | key < val                 = Left (off', len')
-      | otherwise                 = Left (off, len)
+    go (lower, upper)
+      | key == this = Just mid
+      | key < this && mid /= lower = go (lower, mid - 1)
+      | key > this && mid /= upper = go (mid + 1, upper)
+      -- We failed to descend (and thus to find our exact value).
+      --
+      -- We also know that `lower' and `upper' are either
+      --   1. smaller/bigger than the value we're searching for, or
+      --   2. the smallest/biggest value in the table
+      --
+      -- Thus:
+      --   If the key is greater (and we're not at the uppermost
+      --   boundary), the next entry is the lower bound in our
+      --   table.
+      | key > this && mid /= upperBound = Just $ mid + 1
+      | key < this = Just mid
+      | otherwise = Nothing
         where
           mid = lower + (upper - lower) `div` 2
-          (val, off, len) = arr!mid
-          (_, off', len') = arr!(max minB (mid - 1))
+          (this, off, len) = index!mid
