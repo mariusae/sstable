@@ -2,7 +2,7 @@
 
 -- TODO: currently there is no sampling of keys.
 
-module Data.SSTable
+module Data.SSTable.Writer
   ( openWriter
   , closeWriter
   , writeEntry
@@ -10,8 +10,7 @@ module Data.SSTable
 
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
-import qualified System.IO as SysIO
-import System.IO (openFile, hSeek, hClose, SeekMode(..), IOMode(..))
+import System.IO (openFile, hSeek, hClose, Handle, SeekMode(..), IOMode(..))
 import System.Directory (removeFile)
 import Control.Monad (when)
 import Data.Binary (Binary, encode)
@@ -19,46 +18,48 @@ import Data.IORef
 import Data.Int (Int32, Int64)
 import Text.Printf (printf)
 
+import Data.SSTable.Encoding
+
 data Writer = Writer 
   { offset  :: IORef Int32
-  , datH    :: SysIO.Handle
-  , idxH    :: SysIO.Handle 
+  , count   :: IORef Int32
+  , datH    :: Handle
+  , idxH    :: Handle 
   , lastKey :: B.ByteString
   , path    :: String }
 
+-- Path to use for temporary index.
 indexPath path = printf "%s.idx" path
-
-putEncoded :: (Binary a) => SysIO.Handle -> a -> IO ()
-putEncoded h = L.hPut h . encode
 
 openWriter :: String -> IO Writer
 openWriter path = do
   offRef <- newIORef 8
+  cntRef <- newIORef 0
   dat    <- openFile path WriteMode
   idx    <- openFile (indexPath path) ReadWriteMode
 
   -- Leave space for the index offset.
-  putEncoded dat (0 :: Int64)
+  hPut64 dat 0
 
   return $ Writer {
       offset  = offRef
-    , datH    = dat 
+    , count   = cntRef
+    , datH    = dat
     , idxH    = idx
     , lastKey = B.empty
     , path    = path
   }
 
 closeWriter :: Writer -> IO ()
-closeWriter (Writer offRef dat idx _ path) = do
+closeWriter (Writer offRef cntRef dat idx _ path) = do
   -- Write out the index offset.
   hSeek dat AbsoluteSeek 0
-  offset <- readIORef offRef
-  let offset64 :: Int64 = fromIntegral offset
-  putEncoded dat offset64
+  readIORef offRef >>= hPut64 dat . fromIntegral
 
-  -- Copy the index over.
+  -- Copy the index over, but first the count.
   hSeek dat SeekFromEnd 0
   hSeek idx AbsoluteSeek 0
+  readIORef cntRef >>= hPut32 dat . fromIntegral
   copy idx dat
 
   hClose dat
@@ -73,16 +74,17 @@ closeWriter (Writer offRef dat idx _ path) = do
       when (not $ B.null buf) $ B.hPut toH buf >> copy fromH toH
 
 writeEntry :: Writer -> (B.ByteString, B.ByteString) -> IO ()
-writeEntry (Writer offRef dat idx _ _) (key, value) = do
+writeEntry (Writer offRef cntRef dat idx _ _) (key, value) = do
   off <- readIORef offRef
-  putEncoded dat valueLen
+  hPut32 dat $ fromIntegral valueLen
   B.hPut dat value
 
-  putEncoded idx keyLen
+  hPut32 idx $ fromIntegral keyLen
   B.hPut idx key
   L.hPut idx $ encode off
 
   writeIORef offRef $ off + 4 + (fromIntegral $ valueLen)
+  modifyIORef cntRef (+ 1)
 
   where
     valueLen = B.length value
