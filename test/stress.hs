@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 import qualified Data.ByteString.Char8 as B8
-import Data.SSTable
+import Data.SSTable.Writer
 import Text.Printf
 import Control.Exception
 import System.CPUTime
@@ -29,11 +29,11 @@ main = do
   print "writing.."
 
   time $ do
-    w <- Data.SSTable.openWriter "/tmp/test"
+    w <- openWriter "/tmp/test"
     forM_ sorted $ \k -> do
-      Data.SSTable.writeEntry w (B8.pack k, B8.pack k)
+      writeEntry w (B8.pack k, B8.pack k)
 
-    Data.SSTable.closeWriter w
+    closeWriter w
 
   print "..."
   -- print "reading.."

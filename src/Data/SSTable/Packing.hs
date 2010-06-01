@@ -1,10 +1,11 @@
-module Data.SSTable.Encoding
+module Data.SSTable.Packing
   ( -- * big-endian packs.
     pack32
   , pack64
   , unpack32
   , unpack64
 
+    -- ** convenience functions for @Handle@s
   , hPut32
   , hPut64
   , hGet32
@@ -25,14 +26,7 @@ pack32 w =
 
 pack64 :: Word64 -> [Word8]
 pack64 w =
-  [ fromIntegral $ high `shiftR` 24 :: Word8
-  , fromIntegral $ high `shiftR` 16 :: Word8
-  , fromIntegral $ high `shiftR`  8 :: Word8
-  , fromIntegral $ high             :: Word8
-  , fromIntegral $ low  `shiftR` 24 :: Word8
-  , fromIntegral $ low  `shiftR` 16 :: Word8
-  , fromIntegral $ low  `shiftR`  8 :: Word8
-  , fromIntegral $ low              :: Word8 ]
+  pack32 high ++ pack32 low
   where
     high = fromIntegral $ w `shiftR` 32 :: Word32
     low  = fromIntegral $ w             :: Word32

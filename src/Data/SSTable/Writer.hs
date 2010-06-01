@@ -1,6 +1,23 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- TODO: currently there is no sampling of keys.
+-- The data layout is:
+--   version     :: Word32    | header
+--   indexOffset :: Word64
+--   entry0Len   :: Word32    | entries..
+--   entry0Bytes :: [Word8]
+--   entry1Len   :: Word32
+--   entry1Bytes :: [Word8]
+--   ...
+--   entryCount  :: Word32    | index header
+--   key0Off     :: Word64    | index..
+--   key0Len     :: Word32
+--   key0Bytes   :: [Word8]
+--   key1Off     :: Word64
+--   key1Len     :: Word32
+--   key1Bytes   :: [Word8]
+-- 
+-- There is currently no key sampling, and we always load the index
+-- entirely into memory.
 
 module Data.SSTable.Writer
   ( openWriter
@@ -18,10 +35,11 @@ import Data.IORef
 import Data.Int (Int32, Int64)
 import Text.Printf (printf)
 
-import Data.SSTable.Encoding
+import qualified Data.SSTable
+import Data.SSTable.Packing
 
 data Writer = Writer 
-  { offset  :: IORef Int32
+  { offset  :: IORef Int64
   , count   :: IORef Int32
   , datH    :: Handle
   , idxH    :: Handle 
@@ -33,12 +51,13 @@ indexPath path = printf "%s.idx" path
 
 openWriter :: String -> IO Writer
 openWriter path = do
-  offRef <- newIORef 8
+  offRef <- newIORef (4{-version-} + 8{-index offset-})
   cntRef <- newIORef 0
   dat    <- openFile path WriteMode
   idx    <- openFile (indexPath path) ReadWriteMode
 
-  -- Leave space for the index offset.
+  -- Write the version, and leave space for the index offset.
+  hPut32 dat Data.SSTable.version
   hPut64 dat 0
 
   return $ Writer {
@@ -75,15 +94,15 @@ closeWriter (Writer offRef cntRef dat idx _ path) = do
 
 writeEntry :: Writer -> (B.ByteString, B.ByteString) -> IO ()
 writeEntry (Writer offRef cntRef dat idx _ _) (key, value) = do
-  off <- readIORef offRef
   hPut32 dat $ fromIntegral valueLen
   B.hPut dat value
 
+  off <- readIORef offRef
+  hPut64 idx $ fromIntegral off
   hPut32 idx $ fromIntegral keyLen
   B.hPut idx key
-  L.hPut idx $ encode off
 
-  writeIORef offRef $ off + 4 + (fromIntegral $ valueLen)
+  modifyIORef offRef (+ (4 + 8 + (fromIntegral valueLen)))
   modifyIORef cntRef (+ 1)
 
   where
