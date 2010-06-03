@@ -22,6 +22,7 @@
 module Data.SSTable.Writer
   ( openWriter
   , closeWriter
+  , withWriter
   , writeEntry
   ) where
 
@@ -29,7 +30,7 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
 import System.IO (openFile, hSeek, hClose, Handle, SeekMode(..), IOMode(..))
 import System.Directory (removeFile)
-import Control.Monad (when)
+import Control.Monad (unless)
 import Data.Binary (Binary, encode)
 import Data.IORef
 import Data.Int (Int32, Int64)
@@ -72,7 +73,7 @@ openWriter path = do
 closeWriter :: Writer -> IO ()
 closeWriter (Writer offRef cntRef dat idx _ path) = do
   -- Write out the index offset.
-  hSeek dat AbsoluteSeek 0
+  hSeek dat AbsoluteSeek 4
   readIORef offRef >>= hPut64 dat . fromIntegral
 
   -- Copy the index over, but first the count.
@@ -90,7 +91,7 @@ closeWriter (Writer offRef cntRef dat idx _ path) = do
     bufSz = 1024 * 1024
     copy fromH toH = do
       buf <- B.hGet fromH bufSz
-      when (not $ B.null buf) $ B.hPut toH buf >> copy fromH toH
+      unless (B.null buf) $ B.hPut toH buf >> copy fromH toH
 
 writeEntry :: Writer -> (B.ByteString, B.ByteString) -> IO ()
 writeEntry (Writer offRef cntRef dat idx _ _) (key, value) = do
@@ -100,11 +101,20 @@ writeEntry (Writer offRef cntRef dat idx _ _) (key, value) = do
   off <- readIORef offRef
   hPut64 idx $ fromIntegral off
   hPut32 idx $ fromIntegral keyLen
+
   B.hPut idx key
 
-  modifyIORef offRef (+ (4 + 8 + (fromIntegral valueLen)))
+  modifyIORef offRef (+ (4 + (fromIntegral valueLen)))
   modifyIORef cntRef (+ 1)
 
   where
     valueLen = B.length value
     keyLen   = B.length key
+
+withWriter :: String -> (Writer -> IO a) -> IO a
+withWriter path f = do
+  writer <- openWriter path
+  a <- f writer
+  closeWriter writer
+  return a
+  

@@ -1,6 +1,8 @@
 module Data.SSTable.Reader
   ( openReader
   , closeReader
+  , withReader
+  , query
   , leastUpperBound
   ) where
 
@@ -41,7 +43,7 @@ openReader path = do
   -- Read the index as an array.
   index <- newArray_ (1, numEntries) :: IO IOIndex
 
-  copy 0 numEntries h index
+  copy 1 numEntries h index
 
   -- We don't want to copy the whole index in memory, hence the unsafe
   -- freeze.
@@ -60,6 +62,13 @@ closeReader :: Reader -> IO ()
 closeReader (Reader h _) = do
   hClose h
 
+withReader :: String -> (Reader -> IO a) -> IO a
+withReader path f = do
+  reader <- openReader path
+  a <- f reader
+  closeReader reader
+  return a
+
 scan :: Reader -> Int -> IO [(B.ByteString, B.ByteString)]
 scan (Reader h index) n = do
   scan' n
@@ -67,7 +76,7 @@ scan (Reader h index) n = do
     (_, upperBound) = bounds index
 
     scan' n
-      | n > upperBound = return []
+      | n >= upperBound = return []
       | otherwise = do
           let (key, off) = index!n
           entry <- fetch off
@@ -79,6 +88,7 @@ scan (Reader h index) n = do
       hSeek h AbsoluteSeek $ fromIntegral off
       B.hGet h . fromIntegral =<< hGet32 h
 
+query :: Reader -> B.ByteString -> IO [(B.ByteString, B.ByteString)]
 query r@(Reader _ index) begin = do
   case leastUpperBound index begin of
     Nothing -> return []
