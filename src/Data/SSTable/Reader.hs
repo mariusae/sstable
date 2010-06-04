@@ -59,8 +59,7 @@ openReader path = do
           copy (i + 1) n h index
 
 closeReader :: Reader -> IO ()
-closeReader (Reader h _) = do
-  hClose h
+closeReader (Reader h _) = hClose h
 
 withReader :: String -> (Reader -> IO a) -> IO a
 withReader path f = do
@@ -70,8 +69,7 @@ withReader path f = do
   return a
 
 scan :: Reader -> Int -> IO [(B.ByteString, B.ByteString)]
-scan (Reader h index) n = do
-  scan' n
+scan (Reader h index) n = scan' n
   where
     (_, upperBound) = bounds index
 
