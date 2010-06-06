@@ -4,8 +4,9 @@ module Main where
 
 import System.Console.CmdArgs
 import qualified Data.ByteString as B
+import qualified Data.ByteString.Char8 as B8
 import System.IO (isEOF)
-import Data.Char (isSpace, chr)
+import Data.Char (isSpace)
 import Control.Monad (forM_, unless)
 
 import Data.SSTable.Writer
@@ -27,10 +28,11 @@ doit (Write path) = withWriter path go
       eof <- isEOF
       unless eof $ parseLine writer >> go writer
 
-    -- TODO: strip whitespace.
+    strip :: B.ByteString -> B.ByteString
+    strip = B8.dropWhile isSpace
+    keyValue line = let (k, v) = B8.break isSpace line in (strip k, strip v)
 
-    parseLine writer = 
-      writeEntry writer . B.break (isSpace . chr . fromIntegral) =<< B.getLine
+    parseLine writer = writeEntry writer . keyValue =<< B.getLine
 
 doit (Read path) = withReader path enum
   where 
