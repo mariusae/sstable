@@ -1,23 +1,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- The data layout is:
---   version     :: Word32    | header
---   indexOffset :: Word64
---   entry0Len   :: Word32    | entries..
---   entry0Bytes :: [Word8]
---   entry1Len   :: Word32
---   entry1Bytes :: [Word8]
---   ...
---   entryCount  :: Word32    | index header
---   key0Off     :: Word64    | index..
---   key0Len     :: Word32
---   key0Bytes   :: [Word8]
---   key1Off     :: Word64
---   key1Len     :: Word32
---   key1Bytes   :: [Word8]
--- 
--- There is currently no key sampling, and we always load the index
--- entirely into memory.
+-- The data layout is described in the README.md accompanying this
+-- project.
 
 module Data.SSTable.Writer
   ( openWriter
@@ -29,87 +13,113 @@ module Data.SSTable.Writer
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
 import System.IO (openFile, hSeek, hClose, Handle, SeekMode(..), IOMode(..))
-import System.Directory (removeFile)
-import Control.Monad (unless)
+import Control.Monad (unless, when, forM_, liftM)
 import Data.Binary (Binary, encode)
 import Data.IORef
 import Data.Int (Int32, Int64)
+import Data.Word (Word32, Word64)
 import Text.Printf (printf)
 
 import qualified Data.SSTable
 import Data.SSTable.Packing
 
 data Writer = Writer 
-  { offset  :: IORef Int64
-  , count   :: IORef Int32
-  , datH    :: Handle
-  , idxH    :: Handle 
-  , lastKey :: B.ByteString
-  , path    :: String }
+  { offset    :: IORef Int64
+  , blockLeft :: IORef Int32
+  , index     :: IORef [IndexEntry]
+  , handle    :: Handle
+  , lastKey   :: IORef B.ByteString }
 
--- Path to use for temporary index.
-indexPath path = printf "%s.idx" path
+data IndexEntry = IndexEntry
+  { key         :: B.ByteString
+  , blockOffset :: Int64
+  , blockLength :: Int32 }
+
+blockSize = 64 * 1024
 
 openWriter :: String -> IO Writer
 openWriter path = do
-  offRef <- newIORef (4{-version-} + 8{-index offset-})
-  cntRef <- newIORef 0
-  dat    <- openFile path WriteMode
-  idx    <- openFile (indexPath path) ReadWriteMode
+  offset    <- newIORef $ 4{-VERSION-} + 4{-NUM-ENTRIES-} + 8{-INDEX-OFFSET-}
+  blockLeft <- newIORef 0
+  index     <- newIORef []
+  lastKey   <- newIORef B.empty
+  h         <- openFile path WriteMode
 
-  -- Write the version, and leave space for the index offset.
-  hPut32 dat Data.SSTable.version
-  hPut64 dat 0
+  -- Write out the header, filling in for values we do not yet have.
+  hPut32 h Data.SSTable.version  -- VERSION
+  hPut32 h 0                     -- NUM-ENTRIES    [ to be filled ]
+  hPut64 h 0                     -- INDEX-OFFSET   [ to be filled ]
 
   return $ Writer {
-      offset  = offRef
-    , count   = cntRef
-    , datH    = dat
-    , idxH    = idx
-    , lastKey = B.empty
-    , path    = path
+      offset    = offset
+    , blockLeft = blockLeft
+    , index     = index
+    , handle    = h
+    , lastKey   = lastKey
   }
 
 closeWriter :: Writer -> IO ()
-closeWriter (Writer offRef cntRef dat idx _ path) = do
-  -- Write out the index offset.
-  hSeek dat AbsoluteSeek 4
-  readIORef offRef >>= hPut64 dat . fromIntegral
+closeWriter w@(Writer offset _ index h _) = do
+  -- Ensure that the last block length is always filled in.
+  fillLastBlockLen w
 
-  -- Copy the index over, but first the count.
-  hSeek dat SeekFromEnd 0
-  hSeek idx AbsoluteSeek 0
-  readIORef cntRef >>= hPut32 dat . fromIntegral
-  copy idx dat
+  index' <- liftM reverse $ readIORef index 
+  when (null index') $ error "no entries were defined"
 
-  hClose dat
-  hClose idx
+  -- Write out the block count & index offset.
+  hSeek h AbsoluteSeek 4
+  hPut32 h $ fromIntegral $ length index'
+  readIORef offset >>= hPut64 h . fromIntegral
 
-  removeFile $ indexPath path
+  -- Write out the index at the end.
+  hSeek h SeekFromEnd 0
+  forM_ index' $ \(IndexEntry key blockOffset blockLength) -> do
+    hPut32 h $ fromIntegral $ B.length key
+    hPut64 h $ fromIntegral blockOffset
+    hPut32 h $ fromIntegral blockLength
+    B.hPut h key
 
-  where
-    bufSz = 1024 * 1024
-    copy fromH toH = do
-      buf <- B.hGet fromH bufSz
-      unless (B.null buf) $ B.hPut toH buf >> copy fromH toH
+  hClose h
+
+fillLastBlockLen :: Writer -> IO ()
+fillLastBlockLen (Writer _ blockLeft index _ _) = do
+  blockLeftVal <- readIORef blockLeft
+  modifyIORef index $ \index ->
+    case index of
+      e : es -> e { blockLength = blockSize - blockLeftVal } : es
+      [] -> []
 
 writeEntry :: Writer -> (B.ByteString, B.ByteString) -> IO ()
-writeEntry (Writer offRef cntRef dat idx _ _) (key, value) = do
-  hPut32 dat $ fromIntegral valueLen
-  B.hPut dat value
+writeEntry w@(Writer offset blockLeft index h lastKey) (key, value) = do
+  keyGreaterThanLast <- readIORef lastKey >>= return . (> key)
+  when keyGreaterThanLast $ error "entry keys out of order"
 
-  off <- readIORef offRef
-  hPut64 idx $ fromIntegral off
-  hPut32 idx $ fromIntegral keyLen
+  newBlock <- readIORef blockLeft >>= return . (<= 0)
+  when newBlock $ do
+    -- Write an index entry with a placeholder length value (we'll
+    -- fill that in).  It's a new block!
+    fillLastBlockLen w
 
-  B.hPut idx key
+    blockOffset <- readIORef offset
+    let entry = IndexEntry key blockOffset 0
+    modifyIORef index ((:) entry)
+    writeIORef blockLeft blockSize
 
-  modifyIORef offRef (+ (4 + (fromIntegral valueLen)))
-  modifyIORef cntRef (+ 1)
+  B.hPut h keyLen32
+  B.hPut h valueLen32  
+  B.hPut h key
+  B.hPut h value
+
+  writeIORef  lastKey   key
+  modifyIORef blockLeft (+ (- entryLen))
+  modifyIORef offset    (+ fromIntegral entryLen)
 
   where
-    valueLen = B.length value
-    keyLen   = B.length key
+    keyLen32   = B.pack $ pack32 $ fromIntegral keyLen
+    valueLen32 = B.pack $ pack32 $ fromIntegral valueLen
+    entryLen   = 4 + 4 + (fromIntegral keyLen) + (fromIntegral valueLen)
+    valueLen   = B.length value
+    keyLen     = B.length key
 
 withWriter :: String -> (Writer -> IO a) -> IO a
 withWriter path f = do

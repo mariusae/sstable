@@ -2,7 +2,7 @@ module Data.SSTable.Reader
   ( openReader
   , closeReader
   , withReader
-  , query
+  , scan
   , leastUpperBound
   ) where
 
@@ -30,22 +30,21 @@ openReader path = do
   h <- openFile path ReadMode
 
   version <- hGet32 h
-
   when (version /= Data.SSTable.version) $
     error $ printf "mismatched versions (expecting %d, got %d)" 
                    Data.SSTable.version version
 
   -- Fetch the index.
+  numBlocks   <- hGet32 h >>= return . fromIntegral
   indexOffset <- hGet64 h >>= return . fromIntegral
   hSeek h AbsoluteSeek indexOffset
-  numEntries <- hGet32 h >>= return . fromIntegral
 
   -- Read the index as an array.
-  index <- newArray_ (1, numEntries) :: IO IOIndex
+  index <- newArray_ (1, numBlocks) :: IO IOIndex
 
-  copy 1 numEntries h index
+  copy 1 (numBlocks + 1) h index
 
-  -- We don't want to copy the whole index in memory, hence the unsafe
+  -- We don't want to copy the whole index once more, hence the unsafe
   -- freeze.
   liftM (Reader h) $ unsafeFreeze index
 
@@ -53,9 +52,11 @@ openReader path = do
     copy i n h index
       | i == n = return ()
       | otherwise = do
-          off <- hGet64 h
-          key <- B.hGet h . fromIntegral =<< hGet32 h
-          writeArray index i (key, fromIntegral off)
+          keyLen   <- hGet32 h
+          off      <- hGet64 h
+          blockLen <- hGet32 h
+          key      <- B.hGet h (fromIntegral keyLen)
+          writeArray index i (key, fromIntegral off, fromIntegral blockLen)
           copy (i + 1) n h index
 
 closeReader :: Reader -> IO ()
@@ -68,29 +69,45 @@ withReader path f = do
   closeReader reader
   return a
 
-scan :: Reader -> Int -> IO [(B.ByteString, B.ByteString)]
-scan (Reader h index) n = scan' n
-  where
-    (_, upperBound) = bounds index
-
-    scan' n
-      | n >= upperBound = return []
-      | otherwise = do
-          let (key, off) = index!n
-          entry <- fetch off
-          next  <- unsafeInterleaveIO $ scan' (n + 1)
-          return $ (key, entry):next
-
-    fetch off = do
-      -- Seek every time, so that we can interleave IO safely.
-      hSeek h AbsoluteSeek $ fromIntegral off
-      B.hGet h . fromIntegral =<< hGet32 h
-
-query :: Reader -> B.ByteString -> IO [(B.ByteString, B.ByteString)]
-query r@(Reader _ index) begin = do
+scan :: Reader -> B.ByteString -> IO [(B.ByteString, B.ByteString)]
+scan (Reader h index) begin =
   case leastUpperBound index begin of
+    Just n ->  scan' n
     Nothing -> return []
-    Just n  -> scan r n
+
+  where
+    scan' n 
+      | n > upperIndexBound = return []
+      | otherwise = do
+        block <- fetch n
+        scanBlock n block
+
+    -- TODO: this might be nicer with continuations.
+    scanBlock n block
+      | B.null block = scan' $ n + 1
+      | otherwise = do
+        let (header, rest)               = B.splitAt 8 block
+            (keyLenBytes, entryLenBytes) = B.splitAt 4 header
+            keyLen                       = unpackInt keyLenBytes
+            entryLen                     = unpackInt entryLenBytes
+            (bytes, block')              = B.splitAt (keyLen + entryLen) rest
+            (key, entry)                 = B.splitAt keyLen bytes
+
+        if key < begin  -- we may need to skip initial entries
+           then scanBlock n block'
+           else do 
+             next <- unsafeInterleaveIO $ scanBlock n block'
+             return $ (key, entry):next
+
+    fetch n = do
+      -- (a bounds check has already been performed here)
+      let (_, off, len) = index!n
+      hSeek h AbsoluteSeek $ fromIntegral off
+      B.hGet h $ fromIntegral len
+
+    (_, upperIndexBound) = bounds index
+
+    unpackInt = fromIntegral . unpack32 . B.unpack
 
 -- | /O(log n) in index size./ Find the smallest value in the index
 -- greater than or equal to the given key using binary search. We
@@ -132,4 +149,4 @@ leastUpperBound index key =
       | otherwise = Nothing
         where
           mid = lower + (upper - lower) `div` 2
-          (this, off) = index!mid
+          (this, off, _) = index!mid

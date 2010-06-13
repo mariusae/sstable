@@ -37,7 +37,7 @@ doit (Write path) = withWriter path go
 doit (Read path) = withReader path enum
   where 
     enum reader = do
-      entries <- query reader B.empty
+      entries <- scan reader B.empty
       forM_ entries $ \(key, value) -> do
         B.putStr key
         putStr " => "
