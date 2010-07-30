@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE OverloadedStrings, BangPatterns #-}
 
 import qualified Data.ByteString.Char8 as B8
 import Data.SSTable.Writer
@@ -14,19 +14,19 @@ time :: IO t -> IO t
 time a = do
     start <- getCPUTime
     v <- a
-    end   <- getCPUTime
+    end <- getCPUTime
     let diff = (fromIntegral (end - start)) / (10^12)
     printf "Computation time: %0.3f sec\n" (diff :: Double)
     return v
 
 main = do
-  print "generating.."
+  putStrLn "generating.."
 
   -- let !sorted = sort [(fromString . show $ x, fromString $ "hey!!! " ++ (show x)) | x <- [1..1000000]]
   ---let !sorted = sort [(fromString . show $ x, fromString $ "hey!!! " ++ (show x)) | x <- [1..1000000]] :: [(String, String)]
   let !sorted = sort [show $ x | x <- [1..1000000]] :: [String]
 
-  print "writing.."
+  putStrLn "writing.."
 
   time $ do
     w <- openWriter "/tmp/test"
@@ -35,11 +35,11 @@ main = do
 
     closeWriter w
 
-  print "..."
-  -- print "reading.."
+  putStrLn "..."
+  -- putStrLn "reading.."
   -- handle <- time $ Data.SSTable.read "/tmp/test"
-  -- -- print handle
-  -- print "finished reading"
+  -- -- putStrLn handle
+  -- putStrLn "finished reading"
 
 
   where

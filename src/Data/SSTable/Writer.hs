@@ -1,4 +1,4 @@
-{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE ScopedTypeVariables, BangPatterns #-}
 
 -- The data layout is described in the README.md accompanying this
 -- project.
@@ -50,7 +50,7 @@ openWriter path = do
   hPut32 h 0                     -- NUM-ENTRIES    [ to be filled ]
   hPut64 h 0                     -- INDEX-OFFSET   [ to be filled ]
 
-  return $ Writer {
+  return $! Writer {
       offset    = offset
     , blockLeft = blockLeft
     , index     = index
@@ -127,4 +127,3 @@ withWriter path f = do
   a <- f writer
   closeWriter writer
   return a
-  
