@@ -7,6 +7,11 @@ license-file:  LICENSE
 author:        marius a. eriksen
 category:      Data
 synopsis:      SSTables in Haskell
+description:
+    .
+    This library implements SSTables as described in the Bigtable
+    paper: <http://labs.google.com/papers/bigtable.html>
+    .
 maintainer:    marius a. eriksen
 copyright:     (c) 2010 marius a. eriksen
 
@@ -24,11 +29,7 @@ library
   exposed-modules:
     Data.SSTable, Data.SSTable.Writer, Data.SSTable.Packing
 
-  if impl(ghc >= 6.12.0)
-    ghc-options: -threaded -Wall -fwarn-tabs -funbox-strict-fields -O2
-                 -fno-warn-unused-do-bind
-  else
-    ghc-options: -threaded -Wall -fwarn-tabs -funbox-strict-fields -O2
+  ghc-options: -Wall -fwarn-tabs -funbox-strict-fields
 
 executable sstable
   hs-source-dirs: src
@@ -38,11 +39,7 @@ executable sstable
   build-depends:
     cmdargs >= 0.1
 
-  if impl(ghc >= 6.12.0)
-    ghc-options: -threaded -Wall -fwarn-tabs -funbox-strict-fields -O2
-                 -fno-warn-unused-do-bind
-  else
-    ghc-options: -threaded -Wall -fwarn-tabs -funbox-strict-fields -O2
+  ghc-options: -Wall -fwarn-tabs -funbox-strict-fields
 
 executable testSSTable
   hs-source-dirs:
